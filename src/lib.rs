@@ -3,6 +3,7 @@
 
 mod fetch;
 mod format;
+mod inspect;
 mod merge;
 mod raw;
 mod reader;
@@ -14,6 +15,7 @@ pub use fetch::{DefaultLoader, FetchError, HttpOptions, ResourceLoader};
 pub use format::{
     ContentFormatDetectionError, OpenApiContentFormat, detect_content_format, sniff_content_format,
 };
+pub use inspect::{OpenApiStats, inspect_value};
 pub use merge::{Diagnostic, MergeReport, contains_external_references, merge_external_references};
 pub use raw::{
     RawOpenApiDocument, RawOpenApiLoadError, decode_raw_document, load_raw_document,

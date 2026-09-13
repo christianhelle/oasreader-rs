@@ -6,8 +6,8 @@ use serde_json::Value;
 
 use crate::{
     DefaultLoader, Diagnostic, OpenApiContentFormat, OpenApiSource, OpenApiSpecificationVersion,
-    RawOpenApiLoadError, ResourceLoader, SpecificationVersionDetectionError, classify_source,
-    load_raw_document_from_source, merge_external_references,
+    OpenApiStats, RawOpenApiLoadError, ResourceLoader, SpecificationVersionDetectionError,
+    classify_source, inspect_value, load_raw_document_from_source, merge_external_references,
 };
 
 /// A specification read by [`read`] or [`OpenApiReader`], with external references merged.
@@ -25,6 +25,13 @@ pub struct ReadResult {
     pub contained_external_references: bool,
     /// Problems found while merging external references.
     pub diagnostics: Vec<Diagnostic>,
+}
+
+impl ReadResult {
+    /// Counts the paths, operations and components of the merged document.
+    pub fn stats(&self) -> OpenApiStats {
+        inspect_value(&self.document, self.specification_version)
+    }
 }
 
 /// Errors raised while reading a specification.
