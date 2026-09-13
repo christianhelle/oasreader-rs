@@ -1,11 +1,13 @@
 //! Read OpenAPI specifications that are split across multiple files and merge their external
 //! references into a single document.
 
+mod fetch;
 mod format;
 mod raw;
 mod source;
 mod version;
 
+pub use fetch::{DefaultLoader, FetchError, ResourceLoader};
 pub use format::{
     ContentFormatDetectionError, OpenApiContentFormat, detect_content_format, sniff_content_format,
 };
