@@ -1,6 +1,6 @@
 mod support;
 
-use oasreader::{MergeReport, OpenApiSource, merge_external_references};
+use oasreader::{Diagnostic, MergeReport, OpenApiSource, merge_external_references};
 use serde_json::{Value, json};
 use support::MemoryFiles;
 
@@ -414,5 +414,202 @@ definitions:
     assert_eq!(
         document["components"]["schemas"]["Pet"]["properties"]["name"],
         json!({ "type": "string", "description": "The name of the pet" })
+    );
+}
+
+fn main_source() -> OpenApiSource {
+    OpenApiSource::Path("/specs/main.yaml".into())
+}
+
+#[test]
+fn reports_references_to_missing_files_and_leaves_them_unchanged() {
+    let files = MemoryFiles::new(&[(
+        "/specs/main.yaml",
+        r#"
+openapi: 3.0.3
+components:
+  schemas:
+    Pet:
+      $ref: 'missing.yaml#/components/schemas/Pet'
+"#,
+    )]);
+
+    let (document, report) = merge(&files, "/specs/main.yaml");
+
+    assert_eq!(
+        document["components"]["schemas"]["Pet"],
+        json!({ "$ref": "missing.yaml#/components/schemas/Pet" })
+    );
+    assert_eq!(
+        report.diagnostics,
+        [Diagnostic::UnresolvedReference {
+            reference: "missing.yaml#/components/schemas/Pet".to_string(),
+            referenced_from: main_source(),
+            reason: "could not open the file at /specs/missing.yaml: file not found".to_string(),
+        }]
+    );
+    assert_eq!(
+        report.diagnostics[0].to_string(),
+        "could not resolve 'missing.yaml#/components/schemas/Pet' in /specs/main.yaml: could not open the file at /specs/missing.yaml: file not found"
+    );
+}
+
+#[test]
+fn reports_references_to_missing_locations_and_unsupported_schemes() {
+    let files = MemoryFiles::new(&[
+        (
+            "/specs/main.yaml",
+            r#"
+openapi: 3.0.3
+components:
+  schemas:
+    Pet:
+      $ref: 'components.yaml#/components/schemas/Pet'
+    Owner:
+      $ref: 'components.yaml#/definitions/Owner/properties/name'
+    Remote:
+      $ref: 'ftp://example.com/components.yaml#/components/schemas/Remote'
+"#,
+        ),
+        ("/specs/components.yaml", "components: {}\n"),
+    ]);
+
+    let (_, report) = merge(&files, "/specs/main.yaml");
+
+    let reasons: Vec<_> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| match diagnostic {
+            Diagnostic::UnresolvedReference { reason, .. } => reason.as_str(),
+            other => panic!("unexpected diagnostic {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        reasons,
+        [
+            "/specs/components.yaml does not contain the referenced location",
+            "/specs/components.yaml does not contain the referenced location",
+            "the URL scheme 'ftp' is not supported",
+        ]
+    );
+}
+
+#[test]
+fn reports_circular_inlined_references() {
+    let files = MemoryFiles::new(&[
+        (
+            "/specs/main.yaml",
+            r#"
+openapi: 3.0.3
+components:
+  schemas:
+    Tree:
+      $ref: 'tree.yaml'
+"#,
+        ),
+        (
+            "/specs/tree.yaml",
+            r#"
+type: object
+properties:
+  children:
+    type: array
+    items:
+      $ref: 'tree.yaml'
+"#,
+        ),
+    ]);
+
+    let (document, report) = merge(&files, "/specs/main.yaml");
+
+    assert_eq!(
+        document["components"]["schemas"]["Tree"]["properties"]["children"]["items"],
+        json!({ "$ref": "tree.yaml" })
+    );
+    let tree = OpenApiSource::Path("/specs/tree.yaml".into());
+    assert_eq!(
+        report.diagnostics,
+        [Diagnostic::CircularReference {
+            reference: "tree.yaml".to_string(),
+            referenced_from: tree,
+        }]
+    );
+    assert_eq!(
+        report.diagnostics[0].to_string(),
+        "'tree.yaml' in /specs/tree.yaml refers back to itself and was left unchanged"
+    );
+}
+
+#[test]
+fn keeps_the_first_component_when_names_conflict() {
+    let files = MemoryFiles::new(&[
+        (
+            "/specs/main.yaml",
+            r#"
+openapi: 3.0.3
+paths:
+  /pets:
+    $ref: 'paths.yaml#/components/pathItems/Pets'
+components:
+  schemas:
+    Pet:
+      type: object
+"#,
+        ),
+        (
+            "/specs/paths.yaml",
+            r#"
+components:
+  pathItems:
+    Pets:
+      get:
+        responses:
+          '200':
+            description: ok
+            content:
+              application/json:
+                schema:
+                  $ref: 'v2.yaml#/components/schemas/Pet'
+          default:
+            description: same
+            content:
+              application/json:
+                schema:
+                  $ref: 'v1.yaml#/components/schemas/Pet'
+"#,
+        ),
+        (
+            "/specs/v1.yaml",
+            "components:\n  schemas:\n    Pet:\n      type: object\n",
+        ),
+        (
+            "/specs/v2.yaml",
+            "components:\n  schemas:\n    Pet:\n      type: string\n",
+        ),
+    ]);
+
+    let (document, report) = merge(&files, "/specs/main.yaml");
+
+    assert_eq!(
+        document["components"]["schemas"]["Pet"],
+        json!({ "type": "object" })
+    );
+    assert_eq!(
+        document["components"]["pathItems"]["Pets"]["get"]["responses"]["200"]["content"]["application/json"]
+            ["schema"],
+        json!({ "$ref": "#/components/schemas/Pet" })
+    );
+    let paths = OpenApiSource::Path("/specs/paths.yaml".into());
+    assert_eq!(
+        report.diagnostics,
+        [Diagnostic::NameConflict {
+            name: "Pet".to_string(),
+            reference: "v2.yaml#/components/schemas/Pet".to_string(),
+            referenced_from: paths,
+        }]
+    );
+    assert_eq!(
+        report.diagnostics[0].to_string(),
+        "'v2.yaml#/components/schemas/Pet' in /specs/paths.yaml differs from the existing component 'Pet', which was kept"
     );
 }

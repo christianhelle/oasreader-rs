@@ -4,7 +4,7 @@ mod components;
 mod refs;
 mod walk;
 
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt};
 
 use serde_json::{Map, Value};
 
@@ -20,7 +20,66 @@ pub use walk::contains_external_references;
 
 /// A problem found while merging external references.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Diagnostic {}
+pub enum Diagnostic {
+    /// The referenced file could not be loaded, or does not contain the referenced location.
+    /// The reference is left unchanged.
+    UnresolvedReference {
+        /// The `$ref` value as written.
+        reference: String,
+        /// The document containing the reference.
+        referenced_from: OpenApiSource,
+        /// Why the reference could not be resolved.
+        reason: String,
+    },
+    /// An inlined reference points back at a location that is already being inlined. The
+    /// reference is left unchanged.
+    CircularReference {
+        /// The `$ref` value as written.
+        reference: String,
+        /// The document containing the reference.
+        referenced_from: OpenApiSource,
+    },
+    /// A referenced component has the same name as a different component that was already in the
+    /// document or merged earlier. The existing component is kept and the reference points at it.
+    NameConflict {
+        /// The component name.
+        name: String,
+        /// The `$ref` value as written.
+        reference: String,
+        /// The document containing the reference.
+        referenced_from: OpenApiSource,
+    },
+}
+
+impl fmt::Display for Diagnostic {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnresolvedReference {
+                reference,
+                referenced_from,
+                reason,
+            } => write!(
+                f,
+                "could not resolve '{reference}' in {referenced_from}: {reason}"
+            ),
+            Self::CircularReference {
+                reference,
+                referenced_from,
+            } => write!(
+                f,
+                "'{reference}' in {referenced_from} refers back to itself and was left unchanged"
+            ),
+            Self::NameConflict {
+                name,
+                reference,
+                referenced_from,
+            } => write!(
+                f,
+                "'{reference}' in {referenced_from} differs from the existing component '{name}', which was kept"
+            ),
+        }
+    }
+}
 
 /// The outcome of [`merge_external_references`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -60,6 +119,14 @@ pub fn merge_external_references(
 struct Origin {
     source: OpenApiSource,
     pointer: Vec<String>,
+    raw: Value,
+}
+
+/// Why a reference could not be merged as written.
+enum Problem {
+    Unresolved(String),
+    Circular,
+    NameConflict { name: String, local: String },
 }
 
 enum Resolution {
@@ -91,7 +158,7 @@ impl<'a> Merger<'a> {
         let mut components = HashMap::new();
         for (kind, section) in layout.sections() {
             let entries = resolve_pointer(root, &owned(&section)).and_then(Value::as_object);
-            for name in entries.into_iter().flat_map(Map::keys) {
+            for (name, raw) in entries.into_iter().flatten() {
                 let mut pointer = owned(&section);
                 pointer.push(name.clone());
                 components.insert(
@@ -99,6 +166,7 @@ impl<'a> Merger<'a> {
                     Origin {
                         source: source.clone(),
                         pointer,
+                        raw: raw.clone(),
                     },
                 );
             }
@@ -161,14 +229,49 @@ impl<'a> Merger<'a> {
     }
 
     fn resolve(&mut self, reference: &str, base: &OpenApiSource) -> Resolution {
+        let referenced_from = base.clone();
+        let (resolution, problem) = match self.try_resolve(reference, base) {
+            Ok(resolution) => (resolution, None),
+            Err(Problem::Unresolved(reason)) => (
+                Resolution::Unresolved,
+                Some(Diagnostic::UnresolvedReference {
+                    reference: reference.to_string(),
+                    referenced_from,
+                    reason,
+                }),
+            ),
+            Err(Problem::Circular) => (
+                Resolution::Unresolved,
+                Some(Diagnostic::CircularReference {
+                    reference: reference.to_string(),
+                    referenced_from,
+                }),
+            ),
+            Err(Problem::NameConflict { name, local }) => (
+                Resolution::Component(local),
+                Some(Diagnostic::NameConflict {
+                    name,
+                    reference: reference.to_string(),
+                    referenced_from,
+                }),
+            ),
+        };
+
+        self.diagnostics.extend(problem);
+        resolution
+    }
+
+    fn try_resolve(
+        &mut self,
+        reference: &str,
+        base: &OpenApiSource,
+    ) -> Result<Resolution, Problem> {
         let (resource, pointer) = split_reference(reference);
         let target = if resource.is_empty() {
             base.clone()
         } else {
-            match base.join(resource) {
-                Ok(target) => target,
-                Err(_) => return Resolution::Unresolved,
-            }
+            base.join(resource)
+                .map_err(|error| Problem::Unresolved(error.to_string()))?
         };
 
         match component_at(&pointer) {
@@ -180,23 +283,26 @@ impl<'a> Merger<'a> {
         }
     }
 
-    fn inline(&mut self, target: OpenApiSource, pointer: Vec<String>) -> Resolution {
+    fn inline(
+        &mut self,
+        target: OpenApiSource,
+        pointer: Vec<String>,
+    ) -> Result<Resolution, Problem> {
         let location = (target, pointer);
         if self.inlining.contains(&location) {
-            return Resolution::Unresolved;
+            return Err(Problem::Circular);
         }
 
-        let mut value = match self.value_at(&location.0, &location.1) {
-            Ok(value) => value,
-            Err(_) => return Resolution::Unresolved,
-        };
+        let mut value = self
+            .value_at(&location.0, &location.1)
+            .map_err(Problem::Unresolved)?;
 
         let base = location.0.clone();
         self.inlining.push(location);
         self.rewrite(&mut value, &base, false, false);
         self.inlining.pop();
 
-        Resolution::Inline(value)
+        Ok(Resolution::Inline(value))
     }
 
     fn import(
@@ -205,9 +311,11 @@ impl<'a> Merger<'a> {
         name: String,
         target: OpenApiSource,
         pointer: Vec<String>,
-    ) -> Resolution {
+    ) -> Result<Resolution, Problem> {
         let Some(mut section) = self.layout.section(kind) else {
-            return Resolution::Unresolved;
+            return Err(Problem::Unresolved(format!(
+                "the document layout has no section for {kind:?} components"
+            )));
         };
         section.push(&name);
         let local = local_reference(&section);
@@ -217,17 +325,20 @@ impl<'a> Merger<'a> {
             && origin.source == target
             && origin.pointer == pointer
         {
-            return Resolution::Component(local);
+            return Ok(Resolution::Component(local));
         }
 
-        let raw = match self.value_at(&target, &pointer) {
-            Ok(raw) => raw,
-            Err(_) => return Resolution::Unresolved,
-        };
+        let raw = self
+            .value_at(&target, &pointer)
+            .map_err(Problem::Unresolved)?;
 
-        if self.components.contains_key(&key) {
+        if let Some(existing) = self.components.get(&key) {
             // The first component registered under a name wins, as in the .NET oasreader.
-            return Resolution::Component(local);
+            return if existing.raw == raw {
+                Ok(Resolution::Component(local))
+            } else {
+                Err(Problem::NameConflict { name: key.1, local })
+            };
         }
 
         self.components.insert(
@@ -235,6 +346,7 @@ impl<'a> Merger<'a> {
             Origin {
                 source: target.clone(),
                 pointer,
+                raw: raw.clone(),
             },
         );
         let slot = self.imports.len();
@@ -244,7 +356,7 @@ impl<'a> Merger<'a> {
         self.rewrite(&mut value, &target, false, false);
         self.imports[slot].2 = value;
 
-        Resolution::Component(local)
+        Ok(Resolution::Component(local))
     }
 
     fn value_at(&mut self, source: &OpenApiSource, pointer: &[String]) -> Result<Value, String> {
