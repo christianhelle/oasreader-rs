@@ -669,3 +669,130 @@ components:
     );
     assert!(document["components"].get("responses").is_none());
 }
+
+#[test]
+fn sorts_schemas_by_name_after_merging() {
+    let files = MemoryFiles::new(&[
+        (
+            "/specs/main.yaml",
+            r#"
+openapi: 3.0.3
+paths:
+  /a:
+    $ref: 'more.yaml#/components/pathItems/A'
+components:
+  schemas:
+    Zebra:
+      $ref: 'more.yaml#/components/schemas/Mango'
+  parameters:
+    Zulu:
+      name: zulu
+      in: query
+    Alpha:
+      name: alpha
+      in: query
+"#,
+        ),
+        (
+            "/specs/more.yaml",
+            r##"
+components:
+  pathItems:
+    A:
+      get:
+        responses:
+          '200':
+            $ref: '#/components/responses/Ant'
+  responses:
+    Ant:
+      description: ok
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Ant'
+  schemas:
+    Mango:
+      type: object
+    Ant:
+      type: object
+"##,
+        ),
+    ]);
+
+    let (document, _) = merge(&files, "/specs/main.yaml");
+
+    let schemas: Vec<_> = document["components"]["schemas"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .collect();
+    let parameters: Vec<_> = document["components"]["parameters"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .collect();
+    assert_eq!(schemas, ["Ant", "Mango", "Zebra"]);
+    assert_eq!(parameters, ["Zulu", "Alpha"]);
+}
+
+#[test]
+fn merges_into_swagger_two_definitions() {
+    let files = MemoryFiles::new(&[
+        (
+            "/specs/main.json",
+            r#"{
+  "swagger": "2.0",
+  "paths": {
+    "/pets": {
+      "get": {
+        "parameters": [{ "$ref": "shared.json#/parameters/Limit" }],
+        "responses": {
+          "200": { "description": "ok", "schema": { "$ref": "shared.json#/definitions/Pet" } },
+          "default": { "description": "error", "schema": { "$ref": "errors.yaml#/components/schemas/Error" } }
+        }
+      }
+    }
+  }
+}"#,
+        ),
+        (
+            "/specs/shared.json",
+            r##"{
+  "definitions": {
+    "Pet": { "properties": { "owner": { "$ref": "#/definitions/Owner" } } },
+    "Owner": { "type": "object" }
+  },
+  "parameters": { "Limit": { "name": "limit", "in": "query", "type": "integer" } }
+}"##,
+        ),
+        (
+            "/specs/errors.yaml",
+            "components:\n  schemas:\n    Error:\n      type: object\n",
+        ),
+    ]);
+
+    let (document, report) = merge(&files, "/specs/main.json");
+
+    assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+    let get = &document["paths"]["/pets"]["get"];
+    assert_eq!(
+        get["parameters"][0],
+        json!({ "$ref": "#/parameters/Limit" })
+    );
+    assert_eq!(
+        get["responses"]["200"]["schema"],
+        json!({ "$ref": "#/definitions/Pet" })
+    );
+    assert_eq!(
+        get["responses"]["default"]["schema"],
+        json!({ "$ref": "#/definitions/Error" })
+    );
+    let definitions: Vec<_> = document["definitions"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .collect();
+    assert_eq!(definitions, ["Error", "Owner", "Pet"]);
+    assert_eq!(document["parameters"]["Limit"]["name"], "limit");
+    assert!(document.get("components").is_none());
+}

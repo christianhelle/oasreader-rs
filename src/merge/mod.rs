@@ -434,6 +434,13 @@ impl<'a> Merger<'a> {
             entries.entry(name).or_insert(value);
         }
 
+        // Schemas are ordered by name, as the .NET oasreader does after merging.
+        if let Some(section) = self.layout.section(ComponentKind::Schema)
+            && resolve_pointer(document, &owned(&section)).is_some()
+        {
+            section_mut(document, &section).sort_keys();
+        }
+
         MergeReport {
             contained_external_references: true,
             diagnostics: self.diagnostics,
