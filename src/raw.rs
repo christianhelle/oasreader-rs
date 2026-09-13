@@ -5,9 +5,10 @@ use std::fmt;
 use serde_json::Value;
 
 use crate::{
-    ContentFormatDetectionError, OpenApiContentFormat, OpenApiSource, OpenApiSpecificationVersion,
-    SpecificationVersionDetectionError, detect_content_format, detect_specification_version,
-    sniff_content_format,
+    ContentFormatDetectionError, DefaultLoader, FetchError, OpenApiContentFormat, OpenApiSource,
+    OpenApiSpecificationVersion, ResourceLoader, SourceClassificationError,
+    SpecificationVersionDetectionError, classify_source, detect_content_format,
+    detect_specification_version, sniff_content_format,
 };
 
 /// A decoded OpenAPI document together with where it came from and how it was encoded.
@@ -22,6 +23,10 @@ pub struct RawOpenApiDocument {
 /// Errors raised while decoding OpenAPI content.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RawOpenApiLoadError {
+    /// The input could not be classified as a path or URL.
+    SourceClassification(SourceClassificationError),
+    /// The content could not be fetched.
+    Fetch(FetchError),
     /// The content format could not be detected.
     FormatDetection {
         /// The source of the content.
@@ -43,6 +48,8 @@ pub enum RawOpenApiLoadError {
 impl fmt::Display for RawOpenApiLoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::SourceClassification(error) => write!(f, "{error}"),
+            Self::Fetch(error) => write!(f, "{error}"),
             Self::FormatDetection { source, error } => {
                 write!(f, "could not detect the format of {source}: {error}")
             }
@@ -89,6 +96,29 @@ impl RawOpenApiDocument {
     ) -> Result<OpenApiSpecificationVersion, SpecificationVersionDetectionError> {
         detect_specification_version(&self.value)
     }
+}
+
+/// Loads and decodes a document from a path or URL with the [`DefaultLoader`].
+///
+/// # Examples
+///
+/// ```no_run
+/// let raw = oasreader::load_raw_document("specs/petstore.yaml").unwrap();
+///
+/// println!("{} document loaded from {}", raw.format(), raw.source());
+/// ```
+pub fn load_raw_document(input: &str) -> Result<RawOpenApiDocument, RawOpenApiLoadError> {
+    let source = classify_source(input).map_err(RawOpenApiLoadError::SourceClassification)?;
+    load_raw_document_from_source(source, &DefaultLoader::default())
+}
+
+/// Loads and decodes a document from a classified source with a custom loader.
+pub fn load_raw_document_from_source(
+    source: OpenApiSource,
+    loader: &dyn ResourceLoader,
+) -> Result<RawOpenApiDocument, RawOpenApiLoadError> {
+    let content = loader.load(&source).map_err(RawOpenApiLoadError::Fetch)?;
+    decode_raw_document(source, content)
 }
 
 /// Decodes in-memory content into a [`RawOpenApiDocument`].
@@ -244,5 +274,45 @@ mod tests {
             error.to_string(),
             "could not detect the format of openapi: OpenAPI content cannot be empty"
         );
+    }
+
+    #[test]
+    fn load_raw_document_reads_and_decodes_local_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("petstore.json");
+        std::fs::write(&file, r#"{ "swagger": "2.0" }"#).unwrap();
+
+        let raw = load_raw_document(file.to_str().unwrap()).unwrap();
+
+        assert_eq!(raw.source(), &OpenApiSource::Path(file));
+        assert_eq!(raw.value(), &json!({ "swagger": "2.0" }));
+    }
+
+    #[test]
+    fn load_raw_document_reports_classification_and_fetch_errors() {
+        assert_eq!(
+            load_raw_document("  ").unwrap_err().to_string(),
+            "the OpenAPI path is empty"
+        );
+
+        let error = load_raw_document("./does-not-exist.json").unwrap_err();
+        assert!(matches!(
+            error,
+            RawOpenApiLoadError::Fetch(FetchError::FileRead { .. })
+        ));
+        assert!(
+            error
+                .to_string()
+                .starts_with("could not open the file at ./does-not-exist.json: ")
+        );
+    }
+
+    #[test]
+    fn load_raw_document_from_source_uses_the_given_loader() {
+        let loader = |_: &OpenApiSource| Ok("openapi: 3.0.0\n".to_string());
+
+        let raw = load_raw_document_from_source(path("memory.yaml"), &loader).unwrap();
+
+        assert_eq!(raw.value(), &json!({ "openapi": "3.0.0" }));
     }
 }

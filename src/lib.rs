@@ -11,7 +11,10 @@ pub use fetch::{DefaultLoader, FetchError, ResourceLoader};
 pub use format::{
     ContentFormatDetectionError, OpenApiContentFormat, detect_content_format, sniff_content_format,
 };
-pub use raw::{RawOpenApiDocument, RawOpenApiLoadError, decode_raw_document};
+pub use raw::{
+    RawOpenApiDocument, RawOpenApiLoadError, decode_raw_document, load_raw_document,
+    load_raw_document_from_source,
+};
 pub use source::{OpenApiSource, SourceClassificationError, classify_source};
 pub use version::{
     OpenApiSpecificationVersion, SpecificationVersionDetectionError, detect_specification_version,
