@@ -337,6 +337,10 @@ impl<'a> Merger<'a> {
             .value_at(&target, &pointer)
             .map_err(Problem::Unresolved)?;
 
+        if aliases_external_component(&raw, &key.1) {
+            return self.follow_alias(&raw, target, pointer);
+        }
+
         if let Some(existing) = self.components.get(&key) {
             // The first component registered under a name wins, as in the .NET oasreader.
             return if existing.raw == raw {
@@ -362,6 +366,26 @@ impl<'a> Merger<'a> {
         self.imports[slot].2 = value;
 
         Ok(Resolution::Component(local))
+    }
+
+    /// Resolves a component that only references a same-name component in another file.
+    fn follow_alias(
+        &mut self,
+        alias: &Value,
+        target: OpenApiSource,
+        pointer: Vec<String>,
+    ) -> Result<Resolution, Problem> {
+        let location = (target, pointer);
+        if self.inlining.contains(&location) {
+            return Err(Problem::Circular);
+        }
+
+        let reference = alias["$ref"].as_str().unwrap_or_default().to_string();
+        let base = location.0.clone();
+        self.inlining.push(location);
+        let resolution = self.try_resolve(&reference, &base);
+        self.inlining.pop();
+        resolution
     }
 
     fn value_at(&mut self, source: &OpenApiSource, pointer: &[String]) -> Result<Value, String> {

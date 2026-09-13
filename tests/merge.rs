@@ -839,3 +839,66 @@ components:
         })
     );
 }
+
+#[test]
+fn follows_same_name_aliases_through_intermediate_files() {
+    let files = MemoryFiles::new(&[
+        (
+            "/specs/main.yaml",
+            r#"
+openapi: 3.0.3
+paths:
+  /pets:
+    get:
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: 'index.yaml#/components/schemas/Pet'
+"#,
+        ),
+        (
+            "/specs/index.yaml",
+            "components:\n  schemas:\n    Pet:\n      $ref: 'schemas/pet.yaml#/components/schemas/Pet'\n",
+        ),
+        (
+            "/specs/schemas/pet.yaml",
+            "components:\n  schemas:\n    Pet:\n      type: object\n",
+        ),
+    ]);
+
+    let (document, report) = merge(&files, "/specs/main.yaml");
+
+    assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+    assert_eq!(
+        document["components"]["schemas"],
+        json!({ "Pet": { "type": "object" } })
+    );
+}
+
+#[test]
+fn reports_same_name_aliases_that_loop_between_files() {
+    let files = MemoryFiles::new(&[
+        (
+            "/specs/main.yaml",
+            "openapi: 3.0.3\npaths:\n  /pets:\n    $ref: 'a.yaml#/components/pathItems/Pets'\n",
+        ),
+        (
+            "/specs/a.yaml",
+            "components:\n  pathItems:\n    Pets:\n      $ref: 'b.yaml#/components/pathItems/Pets'\n",
+        ),
+        (
+            "/specs/b.yaml",
+            "components:\n  pathItems:\n    Pets:\n      $ref: 'a.yaml#/components/pathItems/Pets'\n",
+        ),
+    ]);
+
+    let (_, report) = merge(&files, "/specs/main.yaml");
+
+    assert!(matches!(
+        report.diagnostics.as_slice(),
+        [Diagnostic::CircularReference { .. }]
+    ));
+}
