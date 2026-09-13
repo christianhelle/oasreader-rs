@@ -1,6 +1,9 @@
 //! Classification of OpenAPI inputs into local paths and HTTP(S) URLs.
 
-use std::{fmt, path::PathBuf};
+use std::{
+    fmt,
+    path::{Component, Path, PathBuf},
+};
 
 use url::Url;
 
@@ -106,9 +109,164 @@ fn candidate_url_scheme(input: &str) -> Option<&str> {
     (starts_with_letter && valid_characters).then_some(scheme)
 }
 
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => match normalized.components().next_back() {
+                Some(Component::Normal(_)) => {
+                    normalized.pop();
+                }
+                Some(Component::RootDir | Component::Prefix(_)) => {}
+                _ => normalized.push(".."),
+            },
+            other => normalized.push(other),
+        }
+    }
+
+    normalized
+}
+
+impl OpenApiSource {
+    /// Resolves a reference (the part of a `$ref` before `#`) against this source.
+    ///
+    /// Absolute HTTP(S) URLs are returned as-is. Relative references are resolved against the
+    /// directory of a local path, or against the URL of a remote document. Local paths are
+    /// normalized lexically so the same file always resolves to the same source.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use oasreader::{OpenApiSource, classify_source};
+    /// use std::path::PathBuf;
+    ///
+    /// let main = classify_source("specs/petstore.yaml").unwrap();
+    /// assert_eq!(
+    ///     main.join("../shared/components.yaml").unwrap(),
+    ///     OpenApiSource::Path(PathBuf::from("shared/components.yaml"))
+    /// );
+    ///
+    /// let remote = classify_source("https://example.com/specs/petstore.yaml").unwrap();
+    /// assert_eq!(
+    ///     remote.join("components.yaml").unwrap().to_string(),
+    ///     "https://example.com/specs/components.yaml"
+    /// );
+    /// ```
+    pub fn join(&self, reference: &str) -> Result<OpenApiSource, SourceClassificationError> {
+        if candidate_url_scheme(reference.trim()).is_some() {
+            return classify_source(reference);
+        }
+
+        match self {
+            Self::Url(base) => base.join(reference).map(Self::Url).map_err(|error| {
+                SourceClassificationError::InvalidUrl {
+                    value: reference.to_string(),
+                    reason: error.to_string(),
+                }
+            }),
+            Self::Path(base) => {
+                let reference = reference.replace('\\', "/");
+                let directory = base.parent().unwrap_or(Path::new(""));
+                Ok(Self::Path(normalize_path(&directory.join(reference))))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn path(value: &str) -> OpenApiSource {
+        OpenApiSource::Path(PathBuf::from(value))
+    }
+
+    fn url(value: &str) -> OpenApiSource {
+        OpenApiSource::Url(Url::parse(value).unwrap())
+    }
+
+    #[test]
+    fn join_resolves_sibling_files_next_to_a_path() {
+        assert_eq!(
+            path("specs/petstore.yaml").join("petstore.components.yaml"),
+            Ok(path("specs/petstore.components.yaml"))
+        );
+    }
+
+    #[test]
+    fn join_resolves_subdirectories_and_parent_directories_lexically() {
+        let main = path("/api/specs/petstore.yaml");
+
+        assert_eq!(
+            main.join("./common/schemas.yaml"),
+            Ok(path("/api/specs/common/schemas.yaml"))
+        );
+        assert_eq!(
+            main.join("../shared/schemas.yaml"),
+            Ok(path("/api/shared/schemas.yaml"))
+        );
+        assert_eq!(
+            main.join("common\\schemas.yaml"),
+            Ok(path("/api/specs/common/schemas.yaml"))
+        );
+    }
+
+    #[test]
+    fn join_resolves_files_next_to_a_bare_file_name() {
+        assert_eq!(
+            path("petstore.yaml").join("components.yaml"),
+            Ok(path("components.yaml"))
+        );
+        assert_eq!(
+            path("petstore.yaml").join("../components.yaml"),
+            Ok(path("../components.yaml"))
+        );
+    }
+
+    #[test]
+    fn join_keeps_absolute_paths() {
+        assert_eq!(
+            path("specs/petstore.yaml").join("/elsewhere/components.yaml"),
+            Ok(path("/elsewhere/components.yaml"))
+        );
+    }
+
+    #[test]
+    fn join_resolves_relative_references_against_urls() {
+        let main = url("https://example.com/specs/v1/petstore.yaml");
+
+        assert_eq!(
+            main.join("components.yaml"),
+            Ok(url("https://example.com/specs/v1/components.yaml"))
+        );
+        assert_eq!(
+            main.join("../shared/components.yaml"),
+            Ok(url("https://example.com/specs/shared/components.yaml"))
+        );
+    }
+
+    #[test]
+    fn join_accepts_absolute_urls_from_any_source() {
+        let reference = "https://example.com/openapi/components.yaml";
+
+        assert_eq!(path("petstore.yaml").join(reference), Ok(url(reference)));
+        assert_eq!(
+            url("http://other.org/a.yaml").join(reference),
+            Ok(url(reference))
+        );
+    }
+
+    #[test]
+    fn join_rejects_unsupported_url_schemes() {
+        assert_eq!(
+            path("petstore.yaml").join("ftp://example.com/components.yaml"),
+            Err(SourceClassificationError::UnsupportedUrlScheme(
+                "ftp".to_string()
+            ))
+        );
+    }
 
     #[test]
     fn classifies_relative_file_paths_as_local_paths() {
