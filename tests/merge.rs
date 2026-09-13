@@ -417,6 +417,11 @@ definitions:
     );
 }
 
+/// Uses `/` as the path separator, since joined paths use the platform's separator.
+fn unix_paths(message: impl ToString) -> String {
+    message.to_string().replace('\\', "/")
+}
+
 fn main_source() -> OpenApiSource {
     OpenApiSource::Path("/specs/main.yaml".into())
 }
@@ -440,16 +445,24 @@ components:
         document["components"]["schemas"]["Pet"],
         json!({ "$ref": "missing.yaml#/components/schemas/Pet" })
     );
+    let [
+        Diagnostic::UnresolvedReference {
+            reference,
+            referenced_from,
+            reason,
+        },
+    ] = report.diagnostics.as_slice()
+    else {
+        panic!("unexpected diagnostics {:?}", report.diagnostics);
+    };
+    assert_eq!(reference, "missing.yaml#/components/schemas/Pet");
+    assert_eq!(referenced_from, &main_source());
     assert_eq!(
-        report.diagnostics,
-        [Diagnostic::UnresolvedReference {
-            reference: "missing.yaml#/components/schemas/Pet".to_string(),
-            referenced_from: main_source(),
-            reason: "could not open the file at /specs/missing.yaml: file not found".to_string(),
-        }]
+        unix_paths(reason),
+        "could not open the file at /specs/missing.yaml: file not found"
     );
     assert_eq!(
-        report.diagnostics[0].to_string(),
+        unix_paths(&report.diagnostics[0]),
         "could not resolve 'missing.yaml#/components/schemas/Pet' in /specs/main.yaml: could not open the file at /specs/missing.yaml: file not found"
     );
 }
@@ -480,7 +493,7 @@ components:
         .diagnostics
         .iter()
         .map(|diagnostic| match diagnostic {
-            Diagnostic::UnresolvedReference { reason, .. } => reason.as_str(),
+            Diagnostic::UnresolvedReference { reason, .. } => unix_paths(reason),
             other => panic!("unexpected diagnostic {other:?}"),
         })
         .collect();
@@ -535,7 +548,7 @@ properties:
         }]
     );
     assert_eq!(
-        report.diagnostics[0].to_string(),
+        unix_paths(&report.diagnostics[0]),
         "'tree.yaml' in /specs/tree.yaml refers back to itself and was left unchanged"
     );
 }
@@ -609,7 +622,7 @@ components:
         }]
     );
     assert_eq!(
-        report.diagnostics[0].to_string(),
+        unix_paths(&report.diagnostics[0]),
         "'v2.yaml#/components/schemas/Pet' in /specs/paths.yaml differs from the existing component 'Pet', which was kept"
     );
 }
