@@ -72,3 +72,55 @@ impl TestServer {
         self.requests.lock().unwrap().clone()
     }
 }
+
+/// An in-memory set of files, keyed by path, usable as a `ResourceLoader`.
+pub struct MemoryFiles {
+    files: std::collections::HashMap<std::path::PathBuf, String>,
+    loads: std::cell::RefCell<Vec<oasreader::OpenApiSource>>,
+}
+
+impl MemoryFiles {
+    pub fn new(files: &[(&str, &str)]) -> Self {
+        Self {
+            files: files
+                .iter()
+                .map(|(path, content)| (std::path::PathBuf::from(path), content.to_string()))
+                .collect(),
+            loads: Default::default(),
+        }
+    }
+
+    /// Returns every source requested from this loader, in order.
+    pub fn loads(&self) -> Vec<oasreader::OpenApiSource> {
+        self.loads.borrow().clone()
+    }
+
+    /// Decodes one of the files into a document tree.
+    pub fn document(&self, path: &str) -> serde_json::Value {
+        let source = oasreader::OpenApiSource::Path(path.into());
+        oasreader::decode_raw_document(source, self.files[std::path::Path::new(path)].clone())
+            .unwrap()
+            .into_value()
+    }
+}
+
+impl oasreader::ResourceLoader for MemoryFiles {
+    fn load(&self, source: &oasreader::OpenApiSource) -> Result<String, oasreader::FetchError> {
+        self.loads.borrow_mut().push(source.clone());
+        match source {
+            oasreader::OpenApiSource::Path(path) => {
+                self.files
+                    .get(path)
+                    .cloned()
+                    .ok_or_else(|| oasreader::FetchError::FileRead {
+                        path: path.clone(),
+                        reason: "file not found".to_string(),
+                    })
+            }
+            oasreader::OpenApiSource::Url(url) => Err(oasreader::FetchError::HttpRequest {
+                url: url.clone(),
+                reason: "not served from memory".to_string(),
+            }),
+        }
+    }
+}
