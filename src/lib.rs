@@ -6,6 +6,7 @@ mod format;
 mod merge;
 mod raw;
 mod reader;
+mod serialize;
 mod source;
 mod version;
 
@@ -19,6 +20,7 @@ pub use raw::{
     load_raw_document_from_source,
 };
 pub use reader::{OpenApiReader, ReadError, ReadResult, read};
+pub use serialize::{SerializationError, merge_external_references_as_string, serialize_document};
 pub use source::{OpenApiSource, SourceClassificationError, classify_source};
 pub use version::{
     OpenApiSpecificationVersion, SpecificationVersionDetectionError, detect_specification_version,
