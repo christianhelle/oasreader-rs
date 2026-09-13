@@ -160,6 +160,9 @@ impl<'a> Merger<'a> {
         for (kind, section) in layout.sections() {
             let entries = resolve_pointer(root, &owned(&section)).and_then(Value::as_object);
             for (name, raw) in entries.into_iter().flatten() {
+                if aliases_external_component(raw, name) {
+                    continue;
+                }
                 let mut pointer = owned(&section);
                 pointer.push(name.clone());
                 components.insert(
@@ -430,8 +433,17 @@ impl<'a> Merger<'a> {
             let Some(section) = self.layout.section(kind) else {
                 continue;
             };
+            let local = local_reference(&[section.as_slice(), &[name.as_str()]].concat());
             let entries = section_mut(document, &section);
-            entries.entry(name).or_insert(value);
+            match entries.get_mut(&name) {
+                Some(existing) if existing.get("$ref").and_then(Value::as_str) == Some(&local) => {
+                    *existing = value;
+                }
+                Some(_) => {}
+                None => {
+                    entries.insert(name, value);
+                }
+            }
         }
 
         // Schemas are ordered by name, as the .NET oasreader does after merging.
@@ -446,6 +458,19 @@ impl<'a> Merger<'a> {
             diagnostics: self.diagnostics,
         }
     }
+}
+
+/// Returns `true` when a component is only an external `$ref` to a component of the same name,
+/// as index files that re-export components from other files do.
+fn aliases_external_component(component: &Value, name: &str) -> bool {
+    let Some(object) = component.as_object().filter(|object| object.len() == 1) else {
+        return false;
+    };
+    let Some(reference) = object.get("$ref").and_then(Value::as_str) else {
+        return false;
+    };
+    let (resource, pointer) = split_reference(reference);
+    !resource.is_empty() && component_at(&pointer).is_some_and(|(_, referenced)| referenced == name)
 }
 
 /// Applies the keywords that sat next to an inlined `$ref` on top of the referenced value.

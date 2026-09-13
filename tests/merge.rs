@@ -796,3 +796,46 @@ fn merges_into_swagger_two_definitions() {
     assert_eq!(document["parameters"]["Limit"]["name"], "limit");
     assert!(document.get("components").is_none());
 }
+
+#[test]
+fn replaces_components_that_alias_an_external_component_of_the_same_name() {
+    let files = MemoryFiles::new(&[
+        (
+            "/specs/main.yaml",
+            r##"
+openapi: 3.0.3
+paths:
+  /pets:
+    get:
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pet'
+components:
+  schemas:
+    Pet:
+      $ref: 'schemas.yaml#/components/schemas/Pet'
+    Animal:
+      $ref: 'schemas.yaml#/components/schemas/Pet'
+"##,
+        ),
+        (
+            "/specs/schemas.yaml",
+            "components:\n  schemas:\n    Pet:\n      type: object\n",
+        ),
+    ]);
+
+    let (document, report) = merge(&files, "/specs/main.yaml");
+
+    assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+    assert_eq!(
+        document["components"]["schemas"],
+        json!({
+            "Animal": { "$ref": "#/components/schemas/Pet" },
+            "Pet": { "type": "object" }
+        })
+    );
+}
