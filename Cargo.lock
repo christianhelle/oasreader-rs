@@ -390,6 +390,7 @@ version = "0.1.0"
 dependencies = [
  "openapiv3",
  "openapiv3_1",
+ "serde",
  "serde_json",
  "tempfile",
  "ureq",

@@ -9,6 +9,8 @@ mod raw;
 mod reader;
 mod serialize;
 mod source;
+#[cfg(feature = "typed")]
+mod typed;
 mod version;
 
 pub use fetch::{DefaultLoader, FetchError, HttpOptions, ResourceLoader};
@@ -24,6 +26,11 @@ pub use raw::{
 pub use reader::{OpenApiReader, ReadError, ReadResult, read};
 pub use serialize::{SerializationError, merge_external_references_as_string, serialize_document};
 pub use source::{OpenApiSource, SourceClassificationError, classify_source};
+#[cfg(feature = "typed")]
+pub use typed::{
+    TypedOpenApiDocument, TypedOpenApiParseError, TypedParseOptions, parse_openapi30_document,
+    parse_openapi31_document, parse_typed_document,
+};
 pub use version::{
     OpenApiSpecificationVersion, SpecificationVersionDetectionError, detect_specification_version,
 };

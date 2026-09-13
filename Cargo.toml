@@ -19,11 +19,12 @@ all-features = true
 [features]
 default = ["remote"]
 remote = ["dep:ureq"]
-typed = ["dep:openapiv3", "dep:openapiv3_1"]
+typed = ["dep:openapiv3", "dep:openapiv3_1", "dep:serde"]
 
 [dependencies]
 openapiv3 = { version = "2.2.0", optional = true }
 openapiv3_1 = { version = "0.1.5", optional = true }
+serde = { version = "1.0.229", optional = true }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 ureq = { version = "3.4.1", default-features = false, features = ["rustls"], optional = true }
 url = "2.5.8"

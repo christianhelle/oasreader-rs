@@ -32,6 +32,15 @@ impl ReadResult {
     pub fn stats(&self) -> OpenApiStats {
         inspect_value(&self.document, self.specification_version)
     }
+
+    /// Parses the merged document into the typed model for its specification version.
+    #[cfg(feature = "typed")]
+    pub fn typed(
+        &self,
+        options: crate::TypedParseOptions,
+    ) -> Result<crate::TypedOpenApiDocument, crate::TypedOpenApiParseError> {
+        crate::parse_typed_document(&self.document, self.specification_version, options)
+    }
 }
 
 /// Errors raised while reading a specification.
