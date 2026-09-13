@@ -1,0 +1,75 @@
+name: Build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/build.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
+      - "tests/**"
+      - "examples/**"
+    branches:
+      - "*"
+  pull_request:
+    paths:
+      - ".github/workflows/build.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
+      - "tests/**"
+      - "examples/**"
+    branches:
+      - "*"
+
+jobs:
+  build:
+    name: 🦀 Verify build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: 🛒 Checkout repository
+        uses: actions/checkout@v6
+
+      - name: 🦀 Setup Rust
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - name: 🎨 Check formatting
+        run: cargo fmt --all --check
+
+      - name: 🔍 Lint
+        run: |
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo clippy --all-targets --no-default-features -- -D warnings
+
+      - name: 🧪 Test
+        run: |
+          cargo test --locked --all-features
+          cargo test --locked --no-default-features
+
+      - name: 📚 Docs
+        run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  integration:
+    name: 🌐 Remote integration tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🛒 Checkout repository
+        uses: actions/checkout@v6
+
+      - name: 🦀 Setup Rust
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: stable
+
+      - name: 🧪 Test against published specifications
+        run: cargo test --locked --all-features -- --ignored
