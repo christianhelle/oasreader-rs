@@ -14,7 +14,7 @@ use crate::{
 };
 use components::{ComponentKind, Layout, component_at};
 use refs::{local_reference, resolve_pointer, split_reference};
-use walk::{is_external_reference, is_literal_subtree, is_named_entry_map};
+use walk::{for_each_reference, is_external_reference, is_literal_subtree, is_named_entry_map};
 
 pub use walk::contains_external_references;
 
@@ -142,6 +142,7 @@ struct Merger<'a> {
     loader: &'a dyn ResourceLoader,
     layout: Layout,
     documents: HashMap<OpenApiSource, Result<Value, String>>,
+    load_order: Vec<OpenApiSource>,
     components: HashMap<(ComponentKind, String), Origin>,
     imports: Vec<(ComponentKind, String, Value)>,
     inlining: Vec<(OpenApiSource, Vec<String>)>,
@@ -176,6 +177,7 @@ impl<'a> Merger<'a> {
             loader,
             layout,
             documents: HashMap::from([(source.clone(), Ok(root.clone()))]),
+            load_order: Vec::new(),
             components,
             imports: Vec::new(),
             inlining: Vec::new(),
@@ -371,6 +373,7 @@ impl<'a> Merger<'a> {
                         .map_err(|error| error.to_string())
                 });
             self.documents.insert(source.clone(), loaded);
+            self.load_order.push(source.clone());
         }
 
         let document = self.documents[source].as_ref().map_err(Clone::clone)?;
@@ -379,7 +382,50 @@ impl<'a> Merger<'a> {
             .ok_or_else(|| format!("{source} does not contain the referenced location"))
     }
 
-    fn finish(self, document: &mut Value) -> MergeReport {
+    /// Imports components that the merged document references locally but does not define,
+    /// from any document loaded while merging.
+    fn import_missing_components(&mut self, document: &Value) {
+        loop {
+            let mut references = Vec::new();
+            for_each_reference(document, &mut |reference| {
+                references.push(reference.to_string())
+            });
+            for (_, _, value) in &self.imports {
+                for_each_reference(value, &mut |reference| {
+                    references.push(reference.to_string())
+                });
+            }
+
+            let imported_before = self.imports.len();
+            for reference in references {
+                let (resource, pointer) = split_reference(&reference);
+                let Some((kind, name)) = component_at(&pointer)
+                    .filter(|_| resource.is_empty())
+                    .map(|(kind, name)| (kind, name.to_string()))
+                else {
+                    continue;
+                };
+                if self.components.contains_key(&(kind, name.clone())) {
+                    continue;
+                }
+
+                let candidate = self.load_order.iter().find(|source| {
+                    matches!(&self.documents[*source], Ok(loaded) if resolve_pointer(loaded, &pointer).is_some())
+                });
+                if let Some(source) = candidate.cloned() {
+                    let _ = self.import(kind, name, source, pointer);
+                }
+            }
+
+            if self.imports.len() == imported_before {
+                break;
+            }
+        }
+    }
+
+    fn finish(mut self, document: &mut Value) -> MergeReport {
+        self.import_missing_components(document);
+
         for (kind, name, value) in self.imports {
             let Some(section) = self.layout.section(kind) else {
                 continue;

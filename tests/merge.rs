@@ -613,3 +613,59 @@ components:
         "'v2.yaml#/components/schemas/Pet' in /specs/paths.yaml differs from the existing component 'Pet', which was kept"
     );
 }
+
+#[test]
+fn imports_undefined_local_components_from_loaded_documents() {
+    let files = MemoryFiles::new(&[
+        (
+            "/specs/main.yaml",
+            r##"
+openapi: 3.0.3
+paths:
+  /pets:
+    get:
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: 'components.yaml#/components/schemas/Pet'
+        default:
+          $ref: '#/components/responses/Undefined'
+"##,
+        ),
+        (
+            "/specs/components.yaml",
+            r##"
+components:
+  schemas:
+    Pet:
+      type: object
+    Count:
+      type: integer
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      schema:
+        $ref: '#/components/schemas/Count'
+"##,
+        ),
+    ]);
+
+    let (document, report) = merge(&files, "/specs/main.yaml");
+
+    assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+    assert_eq!(
+        document["components"]["parameters"]["Limit"]["schema"],
+        json!({ "$ref": "#/components/schemas/Count" })
+    );
+    assert_eq!(
+        document["components"]["schemas"]["Count"],
+        json!({ "type": "integer" })
+    );
+    assert!(document["components"].get("responses").is_none());
+}
