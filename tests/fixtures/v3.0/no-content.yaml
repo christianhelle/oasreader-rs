@@ -1,0 +1,42 @@
+openapi: 3.0.0
+info:
+  title: Reference parameters
+  version: v0.0.1
+paths:
+  '/orders/{orderId}/order-items/{orderItemId}':
+    parameters:
+      - $ref: '#/components/parameters/OrderId'
+      - $ref: '#/components/parameters/OrderItemId'
+    delete:
+      summary: Delete an order item
+      description: >-
+        This method allows to remove an order item from an order, by specifying
+        their ids.
+      responses:
+        '204':
+          description: No Content.
+        default:
+          description: Default response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+            
+components:
+  schemas:      
+    Error:
+      type: object
+      properties:
+        message:
+            type: string
+  parameters:
+    OrderId:
+      name: orderId
+      in: path
+      description: Identifier of the order.
+      required: true
+    OrderItemId:
+      name: orderItemId
+      in: path
+      description: Identifier of the order item.
+      required: true
