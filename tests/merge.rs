@@ -272,3 +272,147 @@ components:
         json!({ "$ref": "#/components/schemas/Node" })
     );
 }
+
+#[test]
+fn inlines_references_to_whole_files() {
+    let files = MemoryFiles::new(&[
+        (
+            "/specs/main.yaml",
+            r#"
+openapi: 3.0.3
+paths:
+  /pets:
+    get:
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: 'schemas/pet.yaml'
+"#,
+        ),
+        (
+            "/specs/schemas/pet.yaml",
+            r#"
+type: object
+properties:
+  category:
+    $ref: 'category.yaml#/components/schemas/Category'
+"#,
+        ),
+        (
+            "/specs/schemas/category.yaml",
+            "components:\n  schemas:\n    Category:\n      type: string\n",
+        ),
+    ]);
+
+    let (document, report) = merge(&files, "/specs/main.yaml");
+
+    assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+    assert_eq!(
+        document["paths"]["/pets"]["get"]["responses"]["200"]["content"]["application/json"]["schema"],
+        json!({
+            "type": "object",
+            "properties": { "category": { "$ref": "#/components/schemas/Category" } }
+        })
+    );
+    assert_eq!(
+        document["components"]["schemas"]["Category"],
+        json!({ "type": "string" })
+    );
+}
+
+#[test]
+fn inlines_references_to_locations_inside_other_documents() {
+    let files = MemoryFiles::new(&[
+        (
+            "/specs/main.yaml",
+            r#"
+openapi: 3.0.3
+paths:
+  /pets/{id}:
+    $ref: 'legacy.yaml#/paths/~1pets~1%7Bid%7D'
+  /owners:
+    get:
+      responses:
+        '200':
+          $ref: 'legacy.yaml#/components/responses/Owners/content/application~1json'
+"#,
+        ),
+        (
+            "/specs/legacy.yaml",
+            r##"
+paths:
+  /pets/{id}:
+    get:
+      responses:
+        '200':
+          $ref: '#/components/responses/Pet'
+components:
+  responses:
+    Pet:
+      description: A pet
+    Owners:
+      content:
+        application/json:
+          schema:
+            type: array
+"##,
+        ),
+    ]);
+
+    let (document, report) = merge(&files, "/specs/main.yaml");
+
+    assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+    assert_eq!(
+        document["paths"]["/pets/{id}"],
+        json!({ "get": { "responses": { "200": { "$ref": "#/components/responses/Pet" } } } })
+    );
+    assert_eq!(
+        document["components"]["responses"]["Pet"],
+        json!({ "description": "A pet" })
+    );
+    assert_eq!(
+        document["paths"]["/owners"]["get"]["responses"]["200"],
+        json!({ "schema": { "type": "array" } })
+    );
+}
+
+#[test]
+fn keeps_sibling_keywords_of_inlined_references() {
+    let files = MemoryFiles::new(&[
+        (
+            "/specs/main.yaml",
+            r#"
+openapi: 3.1.0
+components:
+  schemas:
+    Pet:
+      properties:
+        name:
+          $ref: 'common.yaml#/definitions/Name/properties/value'
+          description: The name of the pet
+"#,
+        ),
+        (
+            "/specs/common.yaml",
+            r#"
+definitions:
+  Name:
+    properties:
+      value:
+        type: string
+        description: A name
+"#,
+        ),
+    ]);
+
+    let (document, report) = merge(&files, "/specs/main.yaml");
+
+    assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+    assert_eq!(
+        document["components"]["schemas"]["Pet"]["properties"]["name"],
+        json!({ "type": "string", "description": "The name of the pet" })
+    );
+}

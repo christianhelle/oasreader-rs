@@ -65,6 +65,8 @@ struct Origin {
 enum Resolution {
     /// The reference now points at a component in the merged document.
     Component(String),
+    /// The reference is replaced by this value, whose own references are already merged.
+    Inline(Value),
     /// The reference could not be merged and is left unchanged.
     Unresolved,
 }
@@ -75,6 +77,7 @@ struct Merger<'a> {
     documents: HashMap<OpenApiSource, Result<Value, String>>,
     components: HashMap<(ComponentKind, String), Origin>,
     imports: Vec<(ComponentKind, String, Value)>,
+    inlining: Vec<(OpenApiSource, Vec<String>)>,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -107,6 +110,7 @@ impl<'a> Merger<'a> {
             documents: HashMap::from([(source.clone(), Ok(root.clone()))]),
             components,
             imports: Vec::new(),
+            inlining: Vec::new(),
             diagnostics: Vec::new(),
         }
     }
@@ -123,10 +127,16 @@ impl<'a> Merger<'a> {
                     .filter(|reference| !in_map && (!in_root || is_external_reference(reference)))
                     .map(str::to_string);
 
-                if let Some(reference) = reference
-                    && let Resolution::Component(local) = self.resolve(&reference, base)
-                {
-                    object.insert("$ref".to_string(), Value::String(local));
+                let mut inlined = None;
+                match reference.map(|reference| self.resolve(&reference, base)) {
+                    Some(Resolution::Component(local)) => {
+                        object.insert("$ref".to_string(), Value::String(local));
+                    }
+                    Some(Resolution::Inline(target)) => {
+                        object.remove("$ref");
+                        inlined = Some(target);
+                    }
+                    Some(Resolution::Unresolved) | None => {}
                 }
 
                 for (key, child) in object.iter_mut() {
@@ -135,6 +145,10 @@ impl<'a> Merger<'a> {
                     }
                     let child_in_map = is_named_entry_map(key, in_map);
                     self.rewrite(child, base, in_root, child_in_map);
+                }
+
+                if let Some(target) = inlined {
+                    *value = with_siblings(target, std::mem::take(object));
                 }
             }
             Value::Array(items) => {
@@ -162,8 +176,27 @@ impl<'a> Merger<'a> {
                 let name = name.to_string();
                 self.import(kind, name, target, pointer)
             }
-            _ => Resolution::Unresolved,
+            _ => self.inline(target, pointer),
         }
+    }
+
+    fn inline(&mut self, target: OpenApiSource, pointer: Vec<String>) -> Resolution {
+        let location = (target, pointer);
+        if self.inlining.contains(&location) {
+            return Resolution::Unresolved;
+        }
+
+        let mut value = match self.value_at(&location.0, &location.1) {
+            Ok(value) => value,
+            Err(_) => return Resolution::Unresolved,
+        };
+
+        let base = location.0.clone();
+        self.inlining.push(location);
+        self.rewrite(&mut value, &base, false, false);
+        self.inlining.pop();
+
+        Resolution::Inline(value)
     }
 
     fn import(
@@ -247,6 +280,17 @@ impl<'a> Merger<'a> {
             contained_external_references: true,
             diagnostics: self.diagnostics,
         }
+    }
+}
+
+/// Applies the keywords that sat next to an inlined `$ref` on top of the referenced value.
+fn with_siblings(target: Value, siblings: Map<String, Value>) -> Value {
+    match target {
+        Value::Object(mut object) if !siblings.is_empty() => {
+            object.extend(siblings);
+            Value::Object(object)
+        }
+        target => target,
     }
 }
 
