@@ -7,7 +7,7 @@ mod raw;
 mod source;
 mod version;
 
-pub use fetch::{DefaultLoader, FetchError, ResourceLoader};
+pub use fetch::{DefaultLoader, FetchError, HttpOptions, ResourceLoader};
 pub use format::{
     ContentFormatDetectionError, OpenApiContentFormat, detect_content_format, sniff_content_format,
 };

@@ -1,6 +1,6 @@
 //! Fetching the text content of OpenAPI documents from disk or over HTTP.
 
-use std::{fmt, fs, path::PathBuf};
+use std::{fmt, fs, path::PathBuf, time::Duration};
 
 use url::Url;
 
@@ -59,9 +59,94 @@ impl fmt::Display for FetchError {
 
 impl std::error::Error for FetchError {}
 
+/// Settings for downloading remote documents.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpOptions {
+    /// The maximum time a single download may take. Defaults to 60 seconds.
+    pub timeout: Duration,
+    /// The largest response body accepted, in bytes. Defaults to 100 MB, which bounds the memory
+    /// a misbehaving server can force the reader to allocate.
+    pub max_download_bytes: u64,
+    /// Skips TLS certificate verification, for development servers with self-signed
+    /// certificates. Defaults to `false`.
+    pub accept_invalid_certificates: bool,
+}
+
+impl Default for HttpOptions {
+    fn default() -> Self {
+        Self {
+            timeout: Duration::from_secs(60),
+            max_download_bytes: 100 * 1024 * 1024,
+            accept_invalid_certificates: false,
+        }
+    }
+}
+
 /// The built-in loader for local files and HTTP(S) URLs.
-#[derive(Debug, Clone, Default)]
-pub struct DefaultLoader {}
+///
+/// Downloading requires the `remote` feature, which is enabled by default.
+#[derive(Debug, Clone)]
+pub struct DefaultLoader {
+    #[cfg(feature = "remote")]
+    agent: ureq::Agent,
+    #[cfg_attr(not(feature = "remote"), allow(dead_code))]
+    options: HttpOptions,
+}
+
+impl DefaultLoader {
+    /// Creates a loader that downloads remote documents with the given options.
+    pub fn new(options: HttpOptions) -> Self {
+        Self {
+            #[cfg(feature = "remote")]
+            agent: ureq::Agent::new_with_config(
+                ureq::Agent::config_builder()
+                    .tls_config(
+                        ureq::tls::TlsConfig::builder()
+                            .disable_verification(options.accept_invalid_certificates)
+                            .build(),
+                    )
+                    .timeout_global(Some(options.timeout))
+                    .build(),
+            ),
+            options,
+        }
+    }
+
+    #[cfg(feature = "remote")]
+    fn download(&self, url: &Url) -> Result<String, FetchError> {
+        let http_error = |error: ureq::Error| FetchError::HttpRequest {
+            url: url.clone(),
+            reason: error.to_string(),
+        };
+
+        let body = self
+            .agent
+            .get(url.as_str())
+            .call()
+            .map_err(http_error)?
+            .body_mut()
+            .with_config()
+            .limit(self.options.max_download_bytes)
+            .read_to_vec()
+            .map_err(http_error)?;
+
+        Ok(String::from_utf8_lossy(&body).into_owned())
+    }
+
+    #[cfg(not(feature = "remote"))]
+    fn download(&self, url: &Url) -> Result<String, FetchError> {
+        Err(FetchError::HttpRequest {
+            url: url.clone(),
+            reason: "remote loading is not enabled (build with the 'remote' feature)".to_string(),
+        })
+    }
+}
+
+impl Default for DefaultLoader {
+    fn default() -> Self {
+        Self::new(HttpOptions::default())
+    }
+}
 
 impl ResourceLoader for DefaultLoader {
     fn load(&self, source: &OpenApiSource) -> Result<String, FetchError> {
@@ -72,10 +157,7 @@ impl ResourceLoader for DefaultLoader {
                     reason: error.to_string(),
                 })
             }
-            OpenApiSource::Url(url) => Err(FetchError::HttpRequest {
-                url: url.clone(),
-                reason: "remote loading is not enabled".to_string(),
-            }),
+            OpenApiSource::Url(url) => self.download(url),
         }
     }
 }
