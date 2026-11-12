@@ -4,7 +4,6 @@ authors = ["Christian Helle"]
 version = "0.1.0"
 edition = "2024"
 description = "Read OpenAPI specifications split across multiple files and merge external references into a single document"
-homepage = "https://github.com/christianhelle/oasreader-rs"
 license = "MIT"
 repository = "https://github.com/christianhelle/oasreader-rs"
 rust-version = "1.96"
